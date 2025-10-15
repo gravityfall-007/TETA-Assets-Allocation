@@ -24,15 +24,18 @@ $ python workflows/backtesting.py
 
 import pandas as pd
 import numpy as np
+import sys
+import os
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from teta.teta_optimizer import TETA_Optimizer
 from teta.utils import compute_daily_returns, compute_annualized_stats
 
 # Parameters
-DATA_PATH = 'data/sample_prices.csv'
+DATA_PATH = '/home/gravityfall_kevin/Desktop/TETA-Assets-Allocation/data/sample_prices.csv'
 RISK_FREE_RATE = 0.01
 INITIAL_CAPITAL = 100_000
-REBALANCE_DAYS = 252  # Approximate number of trading days per year
+REBALANCE_DAYS = 60  # or 90
 
 def sharpe_fitness(weights, mean_returns, cov_matrix, risk_free_rate=RISK_FREE_RATE):
     """
@@ -121,27 +124,74 @@ def backtest_portfolio(price_df):
     return pd.Series(data=portfolio_values, index=dates)
 
 def main():
-    """
-    Main entry point for backtesting script.
-    Loads price data, runs backtest, prints final results, and plots portfolio value curve.
-    """
-    price_df = pd.read_csv(DATA_PATH, index_col=0, parse_dates=True)
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import numpy as np
+
+    # Load price data
+    price_df = pd.read_csv(
+        DATA_PATH,
+        header=[0, 1],
+        index_col=0,
+        parse_dates=True
+    )
+
+    if isinstance(price_df.columns, pd.MultiIndex):
+        price_df = price_df['Close']
+
+    # Run backtest
     backtest_results = backtest_portfolio(price_df)
 
     print("Backtesting completed.")
     print(f"Initial capital: ${INITIAL_CAPITAL:,.2f}")
+    if backtest_results.empty:
+        print("No backtest results — check data length or CSV parsing.")
+        return
     print(f"Final portfolio value after backtest: ${backtest_results.iloc[-1]:,.2f}")
 
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(12, 6))
-    plt.plot(backtest_results.index, backtest_results.values, label='TETA Portfolio Value')
-    plt.title("Portfolio Value Over Backtesting Period")
+    # Convert absolute portfolio values to percentage returns
+    backtest_returns = (backtest_results / INITIAL_CAPITAL - 1) * 100
+
+    # Buy-and-hold benchmark
+    n_assets = price_df.shape[1]
+    initial_prices = price_df.iloc[0].values
+    equal_weights = np.array([1/n_assets] * n_assets)
+    # Align buy-and-hold to backtested period
+    buy_hold_values = INITIAL_CAPITAL * (1 + ((price_df.values - initial_prices) / initial_prices) @ equal_weights)
+    aligned_buy_hold = pd.Series(buy_hold_values, index=price_df.index)
+    aligned_buy_hold = aligned_buy_hold.loc[backtest_returns.index]
+    buy_hold_returns = (buy_hold_values / INITIAL_CAPITAL - 1) * 100
+
+    # Compute rolling volatility (20-day rolling std) for backtested portfolio
+    backtest_vol = pd.Series(backtest_returns.values, index=backtest_returns.index).rolling(window=20).std()
+
+    # Plot enhanced chart
+    plt.figure(figsize=(14, 7))
+    plt.plot(backtest_returns.index, backtest_returns.values, label='TETA Backtested Portfolio', color='blue')
+    plt.plot(backtest_returns.index, buy_hold_returns, label='Buy-and-Hold Portfolio', color='orange', linestyle='--')
+
+    # Add shaded volatility region
+    plt.fill_between(backtest_returns.index,
+                     backtest_returns.values - backtest_vol.values,
+                     backtest_returns.values + backtest_vol.values,
+                     color='blue', alpha=0.2, label='Backtested Volatility (20-day)')
+
+    # Annotate rebalance points
+    REBALANCE_DAYS = 60
+    for i in range(0, len(price_df), REBALANCE_DAYS):
+        if i < len(backtest_returns):
+            plt.axvline(backtest_returns.index[i], color='grey', linestyle=':', alpha=0.5)
+            plt.text(backtest_returns.index[i], plt.ylim()[1]*0.95, 'Rebalance', rotation=90,
+                     verticalalignment='top', fontsize=8, color='grey')
+
+    plt.title("Backtested Portfolio vs Buy-and-Hold (% Returns)")
     plt.xlabel("Date")
-    plt.ylabel("Portfolio Value ($)")
-    plt.grid(True)
+    plt.ylabel("Portfolio Returns (%)")
+    plt.grid(True, linestyle='--', alpha=0.5)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    plt.savefig("backtest_enhanced.png", dpi=300, bbox_inches='tight')
+    print("Enhanced plot saved as backtest_enhanced.png")
 
 if __name__ == "__main__":
     main()

@@ -1,10 +1,13 @@
 import pandas as pd
 import numpy as np
+import sys
+import os
 
-from teta.teta_optimizer import TETA_Optimizer
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from teta.utils import compute_daily_returns, compute_annualized_stats
+from teta.teta_optimizer import TETA_Optimizer
 
-DATA_PATH = 'data/sample_prices.csv'
+DATA_PATH = '/home/gravityfall_kevin/Desktop/TETA-Assets-Allocation/data/sample_prices.csv'
 CAPITAL = 100_000
 
 def sharpe_fitness(weights, mean_returns, cov_matrix, risk_free_rate=0.01):
@@ -18,7 +21,12 @@ def sharpe_fitness(weights, mean_returns, cov_matrix, risk_free_rate=0.01):
     return sharpe
 
 def main():
-    price_df = pd.read_csv(DATA_PATH, index_col=0, parse_dates=True)
+    price_df = pd.read_csv(
+    DATA_PATH,
+    header=[0, 1],     # two header rows: Price/Ticker
+    index_col=0,       # Date as index
+    parse_dates=True   # parse date index
+)
     returns_df = compute_daily_returns(price_df)
     mean_returns, cov_matrix = compute_annualized_stats(returns_df)
     n_assets = len(price_df.columns)

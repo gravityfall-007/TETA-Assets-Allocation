@@ -177,6 +177,150 @@ def backtest_portfolio(price_df):
 
     return pd.Series(data=portfolio_values, index=dates)
 
+def backtest_portfolio_with_details(
+    price_df,
+    train_days: int = None,
+    test_days: int = None,
+    vol_target_annual: float = None,
+    max_weight: float = None,
+    cash_buffer: float = None,
+    trans_cost_bps: float = None,
+    slippage_bps: float = None,
+    shrinkage: float = None,
+):
+    """
+    Backtest with parameter overrides and return detailed artifacts for dashboards.
+
+    Returns a dict with:
+        - values (Series): portfolio equity curve
+        - benchmark (Series): buy-and-hold equity curve aligned to values
+        - weights (DataFrame): rows at rebalance dates, columns=assets
+        - params (dict): resolved parameters used
+    """
+    # Resolve parameters with module defaults
+    td = TRAIN_DAYS if train_days is None else int(train_days)
+    vd = TEST_DAYS if test_days is None else int(test_days)
+    vt = VOL_TARGET_ANNUAL if vol_target_annual is None else float(vol_target_annual)
+    mw = MAX_WEIGHT if max_weight is None else float(max_weight)
+    cb = CASH_BUFFER if cash_buffer is None else float(cash_buffer)
+    tc = TRANS_COST_BPS if trans_cost_bps is None else float(trans_cost_bps)
+    sp = SLIPPAGE_BPS if slippage_bps is None else float(slippage_bps)
+    sk = SHRINKAGE if shrinkage is None else float(shrinkage)
+
+    n_assets = len(price_df.columns)
+    optimizer = TETA_Optimizer(num_coords=n_assets, popSize=50)
+
+    portfolio_values = []
+    dates = []
+    current_capital = INITIAL_CAPITAL
+    prev_weights = np.array([1.0 / n_assets] * n_assets)
+    weights_log = []
+    weights_dates = []
+
+    for start_idx in range(0, len(price_df) - (td + vd), vd):
+        train_df = price_df.iloc[start_idx : start_idx + td]
+        test_df = price_df.iloc[start_idx + td : start_idx + td + vd]
+        if len(test_df) == 0:
+            break
+
+        returns_df = compute_daily_returns(train_df)
+        mean_returns, cov_matrix = compute_annualized_stats(returns_df)
+        diag_cov = np.diag(np.diag(cov_matrix))
+        cov_matrix = (1 - sk) * cov_matrix + sk * diag_cov
+
+        def fitness(x):
+            x = np.array(x)
+            x = np.clip(x, 0, 1)
+            if np.sum(x) == 0:
+                return -1e6
+            if np.any(x > mw):
+                return -1e4
+            x /= np.sum(x)
+            return sharpe_fitness(x, mean_returns, cov_matrix)
+
+        R_MIN = [0.0] * n_assets
+        R_MAX = [1.0] * n_assets
+        R_STEP = [0.01] * n_assets
+
+        best_weights, _ = optimizer.optimize(
+            fitness_function=fitness,
+            max_iterations=50,
+            rangeMinP=R_MIN,
+            rangeMaxP=R_MAX,
+            rangeStepP=R_STEP
+        )
+
+        best_weights = np.clip(best_weights, 0, 1)
+        if np.sum(best_weights) == 0:
+            best_weights = np.array([1.0 / n_assets] * n_assets)
+        else:
+            best_weights /= np.sum(best_weights)
+        best_weights = np.minimum(best_weights, mw)
+        investable_weight = 1.0 - cb
+        best_weights /= np.sum(best_weights)
+        best_weights *= investable_weight
+
+        ex_ante_vol = np.sqrt(np.dot(best_weights.T, np.dot(cov_matrix, best_weights)))
+        if ex_ante_vol > 0:
+            scale = min(1.5, max(0.5, vt / ex_ante_vol))
+            best_weights *= scale
+            best_weights = np.minimum(best_weights, mw)
+            if np.sum(best_weights) > 0:
+                best_weights *= investable_weight / np.sum(best_weights)
+
+        weights_log.append(best_weights.copy())
+        weights_dates.append(test_df.index[0])
+
+        turnover = np.sum(np.abs(best_weights - prev_weights))
+        cost_rate = (tc + sp) / 10_000.0
+        transaction_cost = current_capital * turnover * cost_rate
+        current_capital -= transaction_cost
+
+        test_returns = test_df.pct_change().dropna()
+        for dt, daily_rets in test_returns.iterrows():
+            daily_port_ret = float(np.dot(best_weights, daily_rets.values))
+            current_capital *= (1.0 + daily_port_ret)
+            portfolio_values.append(current_capital)
+            dates.append(dt)
+
+        prev_weights = best_weights.copy()
+
+    values = pd.Series(data=portfolio_values, index=dates)
+
+    # Build aligned buy-and-hold
+    n_assets = price_df.shape[1]
+    equal_weights = np.array([1 / n_assets] * n_assets)
+    if not values.empty:
+        bh_idx = values.index
+        price_aligned = price_df.reindex(bh_idx).ffill()
+        bh_daily_rets = price_aligned.pct_change().dropna()
+        bh_values = INITIAL_CAPITAL * (1.0 + bh_daily_rets.values @ equal_weights)
+        benchmark = pd.Series(bh_values, index=bh_daily_rets.index).reindex(values.index)
+    else:
+        benchmark = pd.Series(dtype=float)
+
+    weights_df = None
+    if weights_log:
+        weights_df = pd.DataFrame(weights_log, index=weights_dates, columns=price_df.columns)
+
+    resolved_params = {
+        "TRAIN_DAYS": td,
+        "TEST_DAYS": vd,
+        "VOL_TARGET_ANNUAL": vt,
+        "MAX_WEIGHT": mw,
+        "CASH_BUFFER": cb,
+        "TRANS_COST_BPS": tc,
+        "SLIPPAGE_BPS": sp,
+        "SHRINKAGE": sk,
+    }
+
+    return {
+        "values": values,
+        "benchmark": benchmark,
+        "weights": weights_df,
+        "params": resolved_params,
+    }
+
 def main():
     import matplotlib.pyplot as plt
     import pandas as pd

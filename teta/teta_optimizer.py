@@ -1,27 +1,46 @@
 import numpy as np
 import random
 
+"""
+TETA Optimizer implementation.
+
+This module provides a simple population-based metaheuristic. It maintains a
+population of agents (candidate solutions) and iteratively "moves" them based on
+random pairing and Gaussian exploration, tracking both individual bests and the
+global best solution.
+
+Public API:
+- class `TETA_Optimizer`: main optimizer with `optimize()` entry point
+- class `TETA_Agent`: internal container for candidate state and bests
+"""
+
 def RNDprobab():
+    """Random probability in [0, 1)."""
     return random.random()
 
 def Scale(val, min_val_in, max_val_in, min_val_out, max_val_out):
+    """Affine scaling from one range to another, clamped to output bounds."""
     if max_val_in == min_val_in:
         return min_val_out
     scaled_val = ((val - min_val_in) / (max_val_in - min_val_in)) * (max_val_out - min_val_out) + min_val_out
     return int(max(min_val_out, min(max_val_out, scaled_val)))
 
 def SeInDiSp(val, range_min, range_max, range_step):
+    """Clamp to [range_min, range_max] and snap to discrete step if provided."""
     val = max(range_min, min(range_max, val))
     if range_step > 0 and range_step < (range_max - range_min):
         val = range_min + round((val - range_min) / range_step) * range_step
     return val
 
 def GaussDistribution(mean, min_val, max_val, scale=1.0):
+    """Gaussian exploration around mean, clamped to [min_val, max_val]."""
     std_dev = 0.1 * scale
     new_val = np.random.normal(loc=mean, scale=std_dev)
     return max(min_val, min(max_val, new_val))
 
 class TETA_Agent:
+    """Container for coordinates and fitness (current and best)."""
+
     def __init__(self, num_coords):
         self.c = np.zeros(num_coords)
         self.f = -np.inf
@@ -29,6 +48,8 @@ class TETA_Agent:
         self.fB = -np.inf
 
 class TETA_Optimizer:
+    """Population-based optimizer with simple movement and revision phases."""
+
     def __init__(self, num_coords, popSize=50):
         self.popSize = popSize
         self.coords = num_coords
@@ -41,6 +62,7 @@ class TETA_Optimizer:
         self.rangeStep = np.zeros(num_coords)
 
     def Init(self, rangeMinP, rangeMaxP, rangeStepP):
+        """Initialize ranges and create the initial population."""
         if len(rangeMinP) != self.coords:
             print("Error: Range arrays size mismatch.")
             return False
@@ -51,6 +73,7 @@ class TETA_Optimizer:
         return True
 
     def initialize_anchors(self):
+        """Create initial random candidates snapped to provided ranges/steps."""
         for i in range(self.popSize):
             agent = self.population[i]
             for c in range(self.coords):
@@ -59,6 +82,7 @@ class TETA_Optimizer:
             agent.cB[:] = agent.c[:]
 
     def Moving(self):
+        """Movement phase: explore by pairing or Gaussian perturbation."""
         if not self.revision:
             self.initialize_anchors()
             self.revision = True
@@ -84,6 +108,7 @@ class TETA_Optimizer:
                 current_agent.c[c] = SeInDiSp(new_value, self.rangeMin[c], self.rangeMax[c], self.rangeStep[c])
 
     def Revision(self):
+        """Revision phase: update personal and global bests and sort population."""
         for i in range(self.popSize):
             agent = self.population[i]
             if agent.f > self.fB:
@@ -95,6 +120,7 @@ class TETA_Optimizer:
         self.population.sort(key=lambda agent: agent.fB, reverse=True)
 
     def optimize(self, fitness_function, max_iterations, rangeMinP, rangeMaxP, rangeStepP):
+        """Run the optimization loop and return the best coordinates and fitness."""
         if not self.Init(rangeMinP, rangeMaxP, rangeStepP):
             return "Initialization Failed"
         self.Moving()
